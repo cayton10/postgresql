@@ -53,5 +53,32 @@ SELECT *
 FROM rental
 WHERE return_date IS NULL;
 
---Q. 8 - SELECT ALL THE RENTALS THAT STARTED BETWEEN THE 1ST OF MAY 2005 AND THE 3RD OF AUGUST
+--Q. 8 - SELECT THE NAME OF THE COUNTRIES THAT CONTAIN "TA"
+SELECT country
+FROM COUNTRY
+WHERE country ILIKE '%ta%';
+
+--Q. 9 - SELECT ALL THE RENTALS THAT STARTED BETWEEN THE 1ST OF MAY 2005 AND THE 3RD OF AUGUST
 --2005
+SELECT *
+FROM rental
+WHERE return_date BETWEEN '05-1-2005' AND '08-3-2005'
+ORDER BY return_date ASC;
+
+--Q. 10 - SELECT THE TITLE OF THE MOVIES WHOSE DESCRIPTION CONTAIN MORE THAN 8 WORDS
+SELECT *
+FROM film
+WHERE array_length(regexp_split_to_array(description, '\s+'), 1) > 8;
+--The regexp_split_to_array function behaves the same as regexp_split_to_table, 
+--except that regexp_split_to_array returns its result as an array of text. 
+--It has the syntax regexp_split_to_array(string, pattern [, flags ]). 
+--The parameters are the same as for regexp_split_to_table.
+
+--Found the information from the above at: https://www.postgresql.org/docs/9.1/functions-matching.html
+--The documentation is readable, and the array_length(regexp_split_to_array) function works as described
+--with DESCRIPTION as the 'string' parameter, SPACE '\s+' as the pattern parameter, but I was confused
+--about what the flag represented. After looking over lots of web resources I found the example below.
+--I'm still not sure why '1' is the appropriate flag here. I tried multiple values and they all broke
+--the query, so maybe you can shed some light on this for me.
+
+--https://stackoverflow.com/a/27835047/12671600
