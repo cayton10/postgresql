@@ -1,0 +1,283 @@
+-- PT 1:
+
+-- Create a superuser role that has complete access to database
+
+CREATE ROLE dbAdmin
+SUPERUSER
+LOGIN
+PASSWORD '@BigCompany!';
+
+--Trying to remove connection permissions to the other tables because every role can access all the other TABLES
+--in the DB. This is infuriating
+
+REVOKE connect
+ON DATABASE dvdrental, postgres, server
+FROM PUBLIC;
+
+
+-- Create 2 group roles: one for "normal" employees, that will be able to only retrieve information from any table but do not have access
+-- to the job_history table and one for "employee manager" that can also modify the tables in the database
+
+--Create group roles
+
+CREATE ROLE employees
+WITH LOGIN
+PASSWORD 'employee!';
+
+CREATE ROLE managers
+LOGIN
+PASSWORD 'manager!';
+
+-- Grant employee permissions to retrieve info from everything but job_history table
+
+GRANT CONNECT
+ON DATABASE bigcompany
+TO employees;
+
+GRANT USAGE
+ON SCHEMA "internal"
+TO employees;
+
+GRANT SELECT
+ON
+	internal.countries,
+	internal.departments,
+	internal.employees,
+	internal.job_grades,
+	internal.jobs,
+	internal.locations,
+	internal.regions
+TO employees;
+
+-- Grant SELECT, INSERT, UPDATE, DELETE, TRUNCATE, etc privileges to employee managers
+
+GRANT CONNECT
+ON DATABASE bigcompany
+TO managers;
+
+GRANT USAGE
+ON SCHEMA "internal"
+TO managers;
+
+GRANT ALL
+ON ALL TABLES
+IN SCHEMA "internal"
+TO managers;
+
+--Create user roles
+
+CREATE ROLE geoff
+INHERIT LOGIN password 'geoffIsGreat';
+
+CREATE ROLE jessica
+INHERIT LOGIN password 'jessIsGreat';
+
+ALTER ROLE managers
+SET search_path TO "internal";
+
+-- Add user roles to group roles
+
+GRANT employees TO geoff;
+
+GRANT managers TO jessica;
+
+
+-- CREATE STORED PROCEDURE THAT TAKES IN ONE INPUT (EMPLOYEE_ID) AND RETURNS  INFORMATION ABOUT EMPLOYEE
+
+--Must set search path to SCHEMA
+
+SET search_path TO internal;
+
+CREATE OR REPLACE FUNCTION get_emp_info(emp_ID integer)
+	returns TABLE
+	(first varchar,
+	 last varchar,
+	 email varchar,
+	 phone varchar,
+	 salary numeric,
+	 commission numeric,
+	 manager smallint,
+	 startDate date,
+	 endDate date,
+	 job varchar,
+	 dept integer)
+
+	language plpgsql
+
+	AS $$
+BEGIN
+return query
+SELECT first_name, last_name, t1.email, phone_number, t1.salary, commission_pct, manager_id,
+		start_date, end_date, t2.job_id, t2.department_id
+FROM internal.employees t1
+LEFT JOIN internal.job_history t2 ON t1.employee_id = t2.employee_id
+WHERE t1.employee_id = emp_ID;
+END;$$
+
+-- Testing the created function
+SELECT * FROM get_emp_info(1);
+
+--Let managers use the FUNCTION
+GRANT EXECUTE
+    ON FUNCTION get_emp_info (emp_ID integer)
+
+    TO GROUP managers;
+
+
+-- Modify the job(s) table to include a field named last_update that is automatically set to the current
+-- time whenever a record is created or updated
+
+ALTER TABLE Jobs
+ADD COLUMN last_update timestamptz;
+
+SET timezone = 'America/New_York';
+
+UPDATE jobs
+SET last_update = NOW();
+
+--Set default for any new additions
+
+ALTER TABLE internal.Jobs
+ALTER COLUMN last_update SET DEFAULT NOW();
+
+
+--Create function to insert timestamp automatically
+
+CREATE OR REPLACE FUNCTION update_timestamp()
+RETURNS TRIGGER
+language plpgsql
+AS $$
+BEGIN
+  NEW.last_update = NOW();
+  RETURN NEW;
+END;$$
+
+CREATE TRIGGER update_timestamp
+BEFORE UPDATE ON jobs
+FOR EACH ROW
+EXECUTE PROCEDURE update_timestamp();
+
+GRANT EXECUTE
+    ON FUNCTION update_timestamp()
+    TO GROUP managers;
+
+--Testing w/ Jessica's db role
+
+UPDATE internal.jobs
+SET min_salary = 92000
+WHERE job_id = 'EMB SYS';
+
+SELECT * FROM internal.jobs;
+
+
+--When a record is modified in the Employee table, a corresponding record should be automatically created
+-- the job_history table
+
+
+--TRIGGER function for adding employees
+
+CREATE OR REPLACE FUNCTION employee_added()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+
+BEGIN
+INSERT INTO internal.job_history(employee_id, start_date, job_id, department_id)
+VALUES (NEW.employee_id, NOW(), NEW.job_id, NEW.department_id);
+RETURN NEW;
+END;
+$$
+
+--Create the trigger that will account for adding new employees
+
+CREATE TRIGGER emp_added_trigger
+AFTER INSERT
+ON employees
+FOR EACH ROW
+EXECUTE PROCEDURE employee_added();
+
+--Grant function to managers
+
+GRANT EXECUTE
+    ON FUNCTION employee_added()
+    TO GROUP managers;
+
+--TRIGGER function for updating/removing employees
+
+CREATE OR REPLACE FUNCTION employee_updated()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+
+
+BEGIN
+
+
+  IF NEW.job_id LIKE OLD.job_id THEN --If the job ID is the same, then update department
+
+    UPDATE internal.job_history
+		SET employee_id = OLD.employee_id, job_id = OLD.job_id, department_id = NEW.department_id
+    WHERE employee_id = OLD.employee_id AND job_id = OLD.job_id AND department_id = OLD.department_id;
+
+  ELSIF NEW.job_id NOT LIKE OLD.job_id THEN --If job ID is different then we've got a new JOB BUDDY!
+
+    -- Get previous job history and update with end date
+    UPDATE internal.job_history
+      SET end_date = NOW()
+      WHERE employee_id = OLD.employee_id AND job_id = OLD.job_id;
+
+    INSERT INTO internal.job_history(employee_id, start_date, job_id, department_id)
+    VALUES(OLD.employee_id, NOW(), NEW.job_id, NEW.department_id);
+
+  ELSE --This means the user was deleted
+
+    UPDATE job_history
+      SET end_date = NOW()
+      WHERE employee_id = OLD.employee_id AND job_id = OLD.job_id AND department_id = OLD.department_id;
+
+  END IF;
+
+RETURN NEW;
+END;
+$$
+
+CREATE TRIGGER employee_updated_trigger
+AFTER UPDATE
+ON employees
+FOR EACH ROW
+EXECUTE PROCEDURE employee_updated();
+
+
+CREATE TRIGGER employee_deleted_trigger
+AFTER DELETE
+ON employees
+FOR EACH ROW
+EXECUTE PROCEDURE employee_updated();
+
+
+
+
+--ALL FOR TESTING PURPOSES
+
+INSERT
+INTO internal.employees
+(employee_id, first_name, last_name, email, phone_number, job_id, salary, commission_pct, manager_id, department_id)
+VALUES
+(
+4,
+'Jessica',
+'Shamwow',
+'jess@gmail.com',
+'3045254178',
+'DB ADMIN',
+82000.00,
+0.00,
+1,
+200
+);
+
+update employees
+set JOB_ID = 'EMB SYS'
+where employee_id = 4;
